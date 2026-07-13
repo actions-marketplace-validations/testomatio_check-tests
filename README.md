@@ -861,10 +861,10 @@ test('resource management', () => {
 
 ## Test aliases
 
-Test aliases are used to map tests in source code to tests in Testomat.io. By default `test` and `it` are parsed. But if you rename them or use another function to define tests (e.g. created/extended test object in Playwright), you can add alias (or multiple aliases, separated by comma) via `--test-alias` option:
+Test aliases (`test.skip()`, `test.fixme()`, `test.fail()`, `test.slow()`) are used to map tests in source code to tests in Testomat.io. By default `test` and `it` are parsed. But if you rename them or use another function to define tests (e.g. created/extended test object in Playwright), you can add alias (or multiple aliases, separated by comma) via `--test-alias` option:
 
 ```
-TESTOMATIO=11111111 npx check-tests Playwright "**/*{.,_}{test,spec}.ts" --test-alias myTest,myCustomFunction
+TESTOMATIO={API_KEY} npx check-tests Playwright "**/*{.,_}{test,spec}.ts" --test-alias myTest,myFixture
 ```
 
 ## Programmatic API

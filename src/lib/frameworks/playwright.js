@@ -23,6 +23,9 @@ module.exports = (ast, file = '', source = '', opts = {}) => {
   let beforeEachCode = '';
   let afterCode = '';
 
+  // built-in `test`/`it` plus any custom fixtures/aliases passed via --test-alias
+  const testNames = ['test', 'it', ...(opts?.testAlias || [])];
+
   function addSuite(path) {
     currentSuite = currentSuite.filter(s => s.loc.end.line > path.loc.start.line);
     path.tags = playwright.getTestProps({ parent: { expression: path } }).tags;
@@ -90,31 +93,33 @@ module.exports = (ast, file = '', source = '', opts = {}) => {
         }
       }
 
-      if (path.isIdentifier({ name: 'skip' })) {
+      // `.skip`/`.fixme` tests are skipped; `.fail`/`.slow` tests still run;
+      // runtime forms without a title (e.g. `test.skip()` inside a body) declare no test
+      if (path.isIdentifier() && ['skip', 'fixme', 'fail', 'slow'].includes(path.node.name)) {
         if (!path.parent || !path.parent.object) {
           return;
         }
         const name =
-          path.parent.object.name || path.parent.object.property.name || path.parent.object.callee.object.name;
+          path.parent.object.name || path.parent.object.property?.name || path.parent.object.callee?.object?.name;
 
-        if (name === 'test' || name === 'it') {
+        if (testNames.includes(name)) {
           // test or it
           if (!hasStringOrTemplateArgument(path.parentPath.container)) return;
 
           const testName = getStringValue(path.parentPath.container);
+          const suites = currentSuite.filter(s => getEndLineNumber({ container: s }) >= getLineNumber(path));
           tests.push({
             name: testName,
-            suites: currentSuite
-              .filter(s => getEndLineNumber({ container: s }) >= getLineNumber(path))
-              .map(s => getStringValue(s)),
+            suites: suites.map(s => getStringValue(s)),
             line: getLineNumber(path),
-            code: getCode(source, getLineNumber(path), getEndLineNumber(path), isLineNumber),
+            // end line comes from the enclosing call to capture the full test body
+            code: getCode(source, getLineNumber(path), getEndLineNumber(path.parentPath), isLineNumber),
             file,
-            skipped: true,
+            skipped: ['skip', 'fixme'].includes(path.node.name) || suites.some(s => s.skipped),
           });
         }
 
-        if (name === 'describe') {
+        if (name === 'describe' && (path.node.name === 'skip' || path.node.name === 'fixme')) {
           // suite
           if (!hasStringOrTemplateArgument(path.parentPath.container)) return;
           const suite = path.parentPath.container;
@@ -125,66 +130,7 @@ module.exports = (ast, file = '', source = '', opts = {}) => {
         // todo: handle "context"
       }
 
-      if (path.isIdentifier({ name: 'fixme' })) {
-        if (!path.parent || !path.parent.object) {
-          return;
-        }
-        const name =
-          path.parent.object.name || path.parent.object.property.name || path.parent.object.callee.object.name;
-
-        if (name === 'test' || name === 'it') {
-          // test or it
-          if (!hasStringOrTemplateArgument(path.parentPath.container)) return;
-
-          const testName = getStringValue(path.parentPath.container);
-          tests.push({
-            name: testName,
-            suites: currentSuite
-              .filter(s => getEndLineNumber({ container: s }) >= getLineNumber(path))
-              .map(s => getStringValue(s)),
-            line: getLineNumber(path),
-            code: getCode(source, getLineNumber(path), getEndLineNumber(path), isLineNumber),
-            file,
-            skipped: true,
-          });
-        }
-
-        if (name === 'describe') {
-          // suite
-          if (!hasStringOrTemplateArgument(path.parentPath.container)) return;
-          const suite = path.parentPath.container;
-          suite.skipped = true;
-          addSuite(suite);
-        }
-
-        // todo: handle "context"
-      }
-
-      if (path.isIdentifier({ name: 'todo' })) {
-        if (!path.parent || !path.parent.object) {
-          return;
-        }
-        // todo tests => skipped tests
-        if (path.parent.object.name === 'test') {
-          // test
-          if (!hasStringOrTemplateArgument(path.parentPath.container)) return;
-
-          const testName = getStringValue(path.parentPath.container);
-          tests.push({
-            name: testName,
-            suites: currentSuite
-              .filter(s => getEndLineNumber({ container: s }) >= getLineNumber(path))
-              .map(s => getStringValue(s)),
-            line: getLineNumber(path),
-            code: getCode(source, getLineNumber(path), getEndLineNumber(path), isLineNumber),
-            file,
-            skipped: true,
-          });
-        }
-      }
-
-      const fixtureNames = [...['test', 'it'], ...(opts?.testAlias || [])];
-      for (const fiixtureName of fixtureNames || []) {
+      for (const fiixtureName of testNames) {
         if (path.isIdentifier({ name: fiixtureName })) {
           if (!hasStringOrTemplateArgument(path.parent)) return;
 
@@ -202,19 +148,19 @@ module.exports = (ast, file = '', source = '', opts = {}) => {
               afterCode;
 
           const testName = getStringValue(path.parent);
+          const suites = currentSuite.filter(s => getEndLineNumber({ container: s }) >= getLineNumber(path));
 
           tests.push({
             name: testName,
-            suites: currentSuite
-              .filter(s => getEndLineNumber({ container: s }) >= getLineNumber(path))
-              .map(s => getStringValue(s)),
+            suites: suites.map(s => getStringValue(s)),
             updatePoint: getUpdatePoint(path.parent),
             line: getLineNumber(path),
             code,
             file,
             tags: [...getAllSuiteTags(currentSuite), ...playwright.getTestProps(path.parentPath).tags],
             annotations: playwright.getTestProps(path.parentPath).annotations,
-            skipped: !!currentSuite.filter(s => s.skipped).length,
+            // only suites still enclosing this line can mark it skipped (not closed siblings)
+            skipped: suites.some(s => s.skipped),
           });
 
           // stop the loop if the test is found
@@ -227,16 +173,15 @@ module.exports = (ast, file = '', source = '', opts = {}) => {
 
         if (!hasStringOrTemplateArgument(currentPath.parent)) return;
         const testName = getStringValue(currentPath.parent);
+        const suites = currentSuite.filter(s => getEndLineNumber({ container: s }) >= getLineNumber(path));
         tests.push({
           name: testName,
-          suites: currentSuite
-            .filter(s => getEndLineNumber({ container: s }) >= getLineNumber(path))
-            .map(s => getStringValue(s)),
+          suites: suites.map(s => getStringValue(s)),
           updatePoint: getUpdatePoint(path.parent),
           line: getLineNumber(currentPath),
           code: getCode(source, getLineNumber(currentPath), getEndLineNumber(currentPath), isLineNumber),
           file,
-          skipped: !!currentSuite.filter(s => s.skipped).length,
+          skipped: suites.some(s => s.skipped),
         });
       }
     },
